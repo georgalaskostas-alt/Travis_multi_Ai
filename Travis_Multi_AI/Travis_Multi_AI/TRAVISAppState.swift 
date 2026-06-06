@@ -1,0 +1,87 @@
+import Foundation
+import Observation
+
+@Observable
+final class TRAVISAppState {
+    var selectedSidebarItem: SidebarItem = .chat
+    var currentDeviceState: DeviceState = .idle
+    var pendingCommands: [TravisCommand] = []
+    var activeTasks: [TravisTask] = sampleTasks
+    var permissions: [TravisPermission] = TravisPermission.defaultPermissions
+
+    var isListening: Bool = false
+    var isProcessing: Bool = false
+    var isInternetEnabled: Bool = true
+    var preferredLanguage: AppLanguage = .greek
+    var assistantName: String = "Travis"
+    var lastResponseSummary: String = "Έτοιμος να βοηθήσω."
+
+    func sendCommand(_ text: String, source: CommandSource = .manual) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let command = TravisCommand(
+            text: trimmed,
+            source: source,
+            status: .queued,
+            requiresApproval: true
+        )
+
+        pendingCommands.insert(command, at: 0)
+        lastResponseSummary = "Έλαβα την εντολή: \(trimmed)"
+        isProcessing = true
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.isProcessing = false
+            self.lastResponseSummary = "Η εντολή καταχωρήθηκε και περιμένει έγκριση ή εκτέλεση."
+        }
+    }
+
+    func toggleListening() {
+        isListening.toggle()
+        currentDeviceState = isListening ? .listening : .idle
+        lastResponseSummary = isListening ? "Σε ακούω..." : "Η ακρόαση σταμάτησε."
+    }
+
+    func updatePermission(_ permission: TravisPermission, to policy: PermissionPolicy) {
+        guard let index = permissions.firstIndex(where: { $0.id == permission.id }) else { return }
+        permissions[index].policy = policy
+    }
+
+    func togglePermissionEnabled(_ permission: TravisPermission) {
+        guard let index = permissions.firstIndex(where: { $0.id == permission.id }) else { return }
+        permissions[index].isEnabled.toggle()
+    }
+}
+
+enum SidebarItem: String, CaseIterable, Identifiable {
+    case chat
+    case tasks
+    case permissions
+    case settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .chat: return "Συνομιλία"
+        case .tasks: return "Tasks"
+        case .permissions: return "Δικαιώματα"
+        case .settings: return "Ρυθμίσεις"
+        }
+    }
+}
+
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case greek
+    case english
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .greek: return "Ελληνικά"
+        case .english: return "English"
+        }
+    }
+}

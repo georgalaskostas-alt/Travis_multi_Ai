@@ -10,9 +10,29 @@
 		EC2170182FD0033700D1AB6D /* Travis_Multi_AI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Travis_Multi_AI.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		EC2170672FD0453400D1AB6D /* Exceptions for "Travis_Multi_AI" folder in "Compile Sources" phase from "Travis_Multi_AI" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = EC2170142FD0033700D1AB6D /* Sources */;
+			membershipExceptions = (
+				"ChatView.swift ",
+				"DeviceState.swift ",
+				"PermissionsView.swift ",
+				"SettingsView.swift ",
+				"TRAVISAppState.swift ",
+				"TravisCommand.swift ",
+				"TRAVISRootView.swift ",
+				"TravisTask.swift ",
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		EC21701A2FD0033700D1AB6D /* Travis_Multi_AI */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EC2170672FD0453400D1AB6D /* Exceptions for "Travis_Multi_AI" folder in "Compile Sources" phase from "Travis_Multi_AI" target */,
+			);
 			path = Travis_Multi_AI;
 			sourceTree = "<group>";
 		};
