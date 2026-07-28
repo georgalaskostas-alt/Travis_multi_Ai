@@ -8,6 +8,7 @@ final class TRAVISAppState {
     var pendingCommands: [TravisCommand] = []
     var activeTasks: [TravisTask] = sampleTasks
     var permissions: [TravisPermission] = TravisPermission.defaultPermissions
+    var cryptoTradingState = CryptoTradingState()
 
     var isListening: Bool = false
     var isProcessing: Bool = false
@@ -57,6 +58,7 @@ final class TRAVISAppState {
 enum SidebarItem: String, CaseIterable, Identifiable {
     case chat
     case tasks
+    case crypto
     case permissions
     case settings
 
@@ -66,6 +68,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .chat: return "Συνομιλία"
         case .tasks: return "Tasks"
+        case .crypto: return "Crypto Trading"
         case .permissions: return "Δικαιώματα"
         case .settings: return "Ρυθμίσεις"
         }

@@ -38,6 +38,8 @@ struct MacAppShell: View {
             ChatView(appState: appState)
         case .tasks:
             taskPanel
+        case .crypto:
+            CryptoTradingView(appState: appState)
         case .permissions:
             PermissionsView(appState: appState)
         case .settings:
@@ -68,6 +70,7 @@ struct MacAppShell: View {
         switch item {
         case .chat: return "message"
         case .tasks: return "checklist"
+        case .crypto: return "bitcoinsign.circle"
         case .permissions: return "lock.shield"
         case .settings: return "gearshape"
         }

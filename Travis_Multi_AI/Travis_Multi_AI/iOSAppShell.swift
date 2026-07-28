@@ -15,6 +15,14 @@ struct iOSAppShell: View {
             .tag(SidebarItem.chat)
 
             NavigationStack {
+                CryptoTradingView(appState: appState)
+            }
+            .tabItem {
+                Label("Crypto", systemImage: "bitcoinsign.circle")
+            }
+            .tag(SidebarItem.crypto)
+
+            NavigationStack {
                 PermissionsView(appState: appState)
             }
             .tabItem {
