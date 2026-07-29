@@ -6,7 +6,6 @@ import Observation
 final class TRAVISAppState {
     var selectedSidebarItem: SidebarItem = .chat
     var currentDeviceState: DeviceState = .idle
-    var pendingCommands: [TravisCommand] = []
     var activeTasks: [TravisTask] = sampleTasks
     var permissions: [TravisPermission] = TravisPermission.defaultPermissions
 
@@ -36,24 +35,21 @@ final class TRAVISAppState {
         self.syncService = SyncService(approvalGate: approvalGate, orchestrator: orchestrator, cryptoCapability: crypto)
     }
 
-    func sendCommand(_ text: String, source: CommandSource = .manual) {
+    /// Routes a chat message through the orchestrator to whichever
+    /// capability it concerns, instead of faking a local response.
+    func sendCommand(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let command = TravisCommand(
-            text: trimmed,
-            source: source,
-            status: .queued,
-            requiresApproval: true
-        )
-
-        pendingCommands.insert(command, at: 0)
-        lastResponseSummary = "Έλαβα την εντολή: \(trimmed)"
         isProcessing = true
+        lastResponseSummary = "Επεξεργασία: \(trimmed)"
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            self.isProcessing = false
-            self.lastResponseSummary = "Η εντολή καταχωρήθηκε και περιμένει έγκριση ή εκτέλεση."
+        Task {
+            let action = await orchestrator.route(trimmed)
+            isProcessing = false
+            lastResponseSummary = action != nil
+                ? "Δημιουργήθηκε πρόταση προς έγκριση."
+                : "Η εντολή προωθήθηκε."
         }
     }
 
