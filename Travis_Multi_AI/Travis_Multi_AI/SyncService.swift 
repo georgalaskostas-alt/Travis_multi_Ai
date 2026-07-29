@@ -1,8 +1,235 @@
-//
-//  SyncService.swift 
-//  Travis_Multi_AI
-//
-//  Created by Κωνσταντινος Γεωργαλας on 3/6/26.
-//
-
+import CloudKit
 import Foundation
+
+/// Syncs TRAVIS's cross-device state via CloudKit's private database using
+/// `CKSyncEngine` (iOS 17+ / macOS 14+ — this project targets iOS 18.5 /
+/// macOS 15.5, so it's available). It mirrors three things across every
+/// signed-in device, near-instantly while the app is foregrounded:
+///   - the orchestrator's chat transcript
+///   - the approval gate's pending proposals + resolved history
+///   - each capability's own state snapshot (today: crypto trading)
+///
+/// What this does NOT do: coordinate which device is allowed to actively
+/// run a capability's autonomous loop. If two devices both have crypto
+/// auto-trading switched on at the same time, each decides independently
+/// and could both act on the same signal — this only mirrors the
+/// resulting state for visibility, it doesn't prevent a duplicate trade.
+/// Until real leader-election/locking exists, only run active auto-trading
+/// on one device at a time.
+///
+/// Requires the "iCloud" capability (CloudKit service) to be enabled for
+/// this target in Xcode's Signing & Capabilities, signed in with an Apple
+/// Developer account — that step can't be done from source alone.
+@MainActor
+final class SyncService {
+    static let containerIdentifier = "iCloud.com.konstantinos.Travis-Multi-AI"
+    private static let zoneName = "TravisAgentZone"
+    private static let stateDefaultsKey = "com.konstantinos.travis.cksyncengine.state"
+
+    private let container: CKContainer
+    private let database: CKDatabase
+    private let zoneID: CKRecordZone.ID
+    private var syncEngine: CKSyncEngine!
+
+    private let approvalGate: ApprovalGateService
+    private let orchestrator: AgentOrchestrator
+    private let cryptoCapability: CryptoTradingState
+
+    private var pushTask: Task<Void, Never>?
+    private var didEnsureZone = false
+
+    init(approvalGate: ApprovalGateService, orchestrator: AgentOrchestrator, cryptoCapability: CryptoTradingState) {
+        self.approvalGate = approvalGate
+        self.orchestrator = orchestrator
+        self.cryptoCapability = cryptoCapability
+
+        container = CKContainer(identifier: Self.containerIdentifier)
+        database = container.privateCloudDatabase
+        zoneID = CKRecordZone.ID(zoneName: Self.zoneName, ownerName: CKCurrentUserDefaultName)
+
+        let delegateBox = SyncEngineDelegateBox()
+        let configuration = CKSyncEngine.Configuration(
+            database: database,
+            stateSerialization: Self.loadStateSerialization(),
+            delegate: delegateBox
+        )
+        syncEngine = CKSyncEngine(configuration)
+        delegateBox.owner = self
+
+        approvalGate.onChange = { [weak self] in self?.scheduleSync() }
+        orchestrator.onChange = { [weak self] in self?.scheduleSync() }
+        cryptoCapability.onStateChanged = { [weak self] in self?.scheduleSync() }
+
+        Task { await ensureZoneExists() }
+    }
+
+    /// Pushes everything that could plausibly be dirty. There's no
+    /// fine-grained per-field dirty-tracking here — every changed model
+    /// re-marks its whole record as pending, which CKSyncEngine coalesces
+    /// and re-uploads with the latest content. Simple and correct, if not
+    /// maximally bandwidth-efficient; acceptable for this app's data volume.
+    private func scheduleSync() {
+        pushTask?.cancel()
+        pushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000) // debounce rapid-fire local changes
+            guard let self, !Task.isCancelled else { return }
+            self.markAllLocalRecordsPending()
+            try? await self.syncEngine.sendChanges()
+        }
+    }
+
+    private func ensureZoneExists() async {
+        guard !didEnsureZone else { return }
+        didEnsureZone = true
+        let zone = CKRecordZone(zoneID: zoneID)
+        syncEngine.state.add(pendingDatabaseChanges: [.saveZone(zone)])
+        try? await syncEngine.sendChanges()
+    }
+
+    private func markAllLocalRecordsPending() {
+        var recordIDs: [CKRecord.ID] = []
+
+        for entry in orchestrator.transcript {
+            recordIDs.append(recordID(forTranscriptEntryId: entry.id))
+        }
+        for action in approvalGate.pendingActions + approvalGate.history {
+            recordIDs.append(recordID(forProposedActionId: action.id))
+        }
+        recordIDs.append(cryptoSnapshotRecordID)
+
+        syncEngine.state.add(pendingRecordZoneChanges: recordIDs.map { .saveRecord($0) })
+    }
+
+    // MARK: - Record identity
+
+    private func recordID(forTranscriptEntryId id: UUID) -> CKRecord.ID {
+        CKRecord.ID(recordName: "transcript-\(id.uuidString)", zoneID: zoneID)
+    }
+
+    private func recordID(forProposedActionId id: UUID) -> CKRecord.ID {
+        CKRecord.ID(recordName: "proposal-\(id.uuidString)", zoneID: zoneID)
+    }
+
+    private var cryptoSnapshotRecordID: CKRecord.ID {
+        CKRecord.ID(recordName: "capability-crypto-trading", zoneID: zoneID)
+    }
+
+    // MARK: - Outgoing: build a CKRecord for a given local model
+
+    fileprivate func record(for recordID: CKRecord.ID) -> CKRecord? {
+        let name = recordID.recordName
+
+        if name.hasPrefix("transcript-") {
+            guard let entry = orchestrator.transcript.first(where: { recordID.recordName == self.recordID(forTranscriptEntryId: $0.id).recordName }) else { return nil }
+            return makeRecord(recordType: "TranscriptEntry", recordID: recordID, payload: entry)
+        }
+
+        if name.hasPrefix("proposal-") {
+            let all = approvalGate.pendingActions + approvalGate.history
+            guard let action = all.first(where: { recordID.recordName == self.recordID(forProposedActionId: $0.id).recordName }) else { return nil }
+            return makeRecord(recordType: "ProposedActionRecord", recordID: recordID, payload: action)
+        }
+
+        if name == cryptoSnapshotRecordID.recordName {
+            return makeRecord(recordType: "CapabilitySnapshot", recordID: recordID, payload: cryptoCapability.syncSnapshot)
+        }
+
+        return nil
+    }
+
+    private func makeRecord<T: Encodable>(recordType: String, recordID: CKRecord.ID, payload: T) -> CKRecord? {
+        guard let data = try? JSONEncoder().encode(payload) else { return nil }
+        let record = CKRecord(recordType: recordType, recordID: recordID)
+        record["payload"] = data as NSData
+        return record
+    }
+
+    // MARK: - Incoming: apply a CKRecord fetched from another device
+
+    fileprivate func apply(_ record: CKRecord) {
+        guard let nsData = record["payload"] as? NSData else { return }
+        let data = nsData as Data
+
+        switch record.recordType {
+        case "TranscriptEntry":
+            guard let entry = try? JSONDecoder().decode(OrchestratorTranscriptEntry.self, from: data) else { return }
+            orchestrator.mergeRemoteTranscriptEntry(entry)
+
+        case "ProposedActionRecord":
+            guard let action = try? JSONDecoder().decode(ProposedAction.self, from: data) else { return }
+            approvalGate.mergeRemote(action)
+
+        case "CapabilitySnapshot":
+            guard record.recordID.recordName == cryptoSnapshotRecordID.recordName,
+                  let snapshot = try? JSONDecoder().decode(CryptoCapabilitySnapshot.self, from: data)
+            else { return }
+            cryptoCapability.applyRemoteSnapshot(snapshot)
+
+        default:
+            break
+        }
+    }
+
+    fileprivate func applyDeletion(_ recordID: CKRecord.ID) {
+        // Nothing in this model is ever hard-deleted today; reserved for
+        // future use (e.g. pruning old transcript entries).
+    }
+
+    fileprivate func persist(_ stateSerialization: CKSyncEngine.State.Serialization) {
+        guard let data = try? JSONEncoder().encode(stateSerialization) else { return }
+        UserDefaults.standard.set(data, forKey: Self.stateDefaultsKey)
+    }
+
+    private static func loadStateSerialization() -> CKSyncEngine.State.Serialization? {
+        guard let data = UserDefaults.standard.data(forKey: stateDefaultsKey) else { return nil }
+        return try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: data)
+    }
+}
+
+/// `CKSyncEngine.Configuration` takes its delegate at construction time,
+/// before `SyncService` itself finishes initializing (and `syncEngine` is
+/// briefly nil during that window) — so the delegate is this tiny
+/// indirection box instead of `SyncService` conforming directly, with
+/// `owner` wired up right after the engine is created.
+private final class SyncEngineDelegateBox: NSObject, CKSyncEngineDelegate {
+    weak var owner: SyncService?
+
+    func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+        switch event {
+        case .stateUpdate(let stateUpdate):
+            await owner?.persist(stateUpdate.stateSerialization)
+
+        case .fetchedRecordZoneChanges(let changes):
+            for modification in changes.modifications {
+                await owner?.apply(modification.record)
+            }
+            for deletion in changes.deletions {
+                await owner?.applyDeletion(deletion.recordID)
+            }
+
+        default:
+            break
+        }
+    }
+
+    func nextRecordZoneChangeBatch(_ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine) async -> CKSyncEngine.RecordZoneChangeBatch? {
+        let scope = context.options.scope
+        let pending = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
+        guard !pending.isEmpty, let owner else { return nil }
+
+        // Resolve every record up front (on the owner's actor) so the
+        // provider closure below can stay a plain, synchronous lookup —
+        // that way it satisfies whichever exact closure signature this
+        // CKSyncEngine SDK version expects, sync or async.
+        var resolvedRecords: [CKRecord.ID: CKRecord] = [:]
+        for change in pending {
+            if case .saveRecord(let recordID) = change, let record = await owner.record(for: recordID) {
+                resolvedRecords[recordID] = record
+            }
+        }
+
+        return await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: pending) { recordID in
+            resolvedRecords[recordID]
+        }
+    }
+}

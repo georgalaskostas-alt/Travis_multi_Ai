@@ -14,12 +14,17 @@ final class ApprovalGateService {
 
     private var registry: [String: WeakCapabilityBox] = [:]
 
+    /// Fired after `pendingActions`/`history` change, so `SyncService` can
+    /// push the update without this type needing to know sync exists.
+    var onChange: (() -> Void)?
+
     func register(_ capability: AgentCapability) {
         registry[capability.id] = WeakCapabilityBox(capability)
     }
 
     func submit(_ action: ProposedAction) {
         pendingActions.append(action)
+        onChange?()
     }
 
     /// Records an action a capability already executed without waiting for
@@ -31,6 +36,7 @@ final class ApprovalGateService {
         resolved.status = .approved
         resolved.resolvedAt = resolved.resolvedAt ?? Date()
         history.insert(resolved, at: 0)
+        onChange?()
     }
 
     @discardableResult
@@ -41,6 +47,35 @@ final class ApprovalGateService {
     @discardableResult
     func reject(_ actionId: UUID, reason: String? = nil) -> ProposedAction? {
         resolve(actionId, to: .rejected, rejectionReason: reason)
+    }
+
+    /// Merges a `ProposedAction` received from another device via sync.
+    /// Only updates local bookkeeping — it deliberately never calls back
+    /// into the capability, since the device that actually resolved the
+    /// action already triggered the real effect there; that capability's
+    /// own state (e.g. crypto's positions) syncs separately. Never fires
+    /// `onChange`, so applying a remote update doesn't echo it right back.
+    func mergeRemote(_ action: ProposedAction) {
+        if let index = pendingActions.firstIndex(where: { $0.id == action.id }) {
+            if action.status == .pending {
+                pendingActions[index] = action
+            } else {
+                pendingActions.remove(at: index)
+                history.insert(action, at: 0)
+            }
+            return
+        }
+
+        if let index = history.firstIndex(where: { $0.id == action.id }) {
+            history[index] = action
+            return
+        }
+
+        if action.status == .pending {
+            pendingActions.append(action)
+        } else {
+            history.insert(action, at: 0)
+        }
     }
 
     @discardableResult
@@ -54,6 +89,7 @@ final class ApprovalGateService {
         history.insert(action, at: 0)
 
         registry[action.capabilityId]?.value?.resolve(action)
+        onChange?()
         return action
     }
 }

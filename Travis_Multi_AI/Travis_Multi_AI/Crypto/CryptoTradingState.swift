@@ -59,6 +59,10 @@ final class CryptoTradingState: AgentCapability {
     var lastStrategyDecision: StrategyDecision?
     var isRefreshing: Bool = false
 
+    /// Fired after position/trade/mode state changes, so `SyncService` can
+    /// push the update without this type needing to know sync exists.
+    var onStateChanged: (() -> Void)?
+
     let riskManager: CryptoRiskManager
     let strategyEngine = AdaptiveStrategyEngine()
     private let marketDataService = BinanceMarketDataService()
@@ -85,6 +89,46 @@ final class CryptoTradingState: AgentCapability {
     }
 
     var isCircuitBreakerTripped: Bool { riskManager.isCircuitBreakerTripped }
+
+    /// Single read/write surface `SyncService` uses to snapshot and restore
+    /// this capability's state, without reaching into its internals.
+    var syncSnapshot: CryptoCapabilitySnapshot {
+        get {
+            CryptoCapabilitySnapshot(
+                tradingMode: tradingMode,
+                isAutoTradingEnabled: isAutoTradingEnabled,
+                selectedSymbol: selectedSymbol,
+                openPositions: openPositions,
+                tradeHistory: tradeHistory,
+                paperCashBalance: paperCashBalance,
+                paperStartingBalance: paperStartingBalance,
+                maxRiskPerTradePercent: riskManager.maxRiskPerTradePercent,
+                maxDailyLossPercent: riskManager.maxDailyLossPercent,
+                mandatoryStopLossPercent: riskManager.mandatoryStopLossPercent,
+                maxOpenPositions: riskManager.maxOpenPositions
+            )
+        }
+        set {
+            tradingMode = newValue.tradingMode
+            isAutoTradingEnabled = newValue.isAutoTradingEnabled
+            selectedSymbol = newValue.selectedSymbol
+            openPositions = newValue.openPositions
+            tradeHistory = newValue.tradeHistory
+            paperCashBalance = newValue.paperCashBalance
+            paperStartingBalance = newValue.paperStartingBalance
+            riskManager.maxRiskPerTradePercent = newValue.maxRiskPerTradePercent
+            riskManager.maxDailyLossPercent = newValue.maxDailyLossPercent
+            riskManager.mandatoryStopLossPercent = newValue.mandatoryStopLossPercent
+            riskManager.maxOpenPositions = newValue.maxOpenPositions
+        }
+    }
+
+    /// Applies a snapshot received from another device via sync.
+    /// Last-writer-wins — see the caveat on `CryptoCapabilitySnapshot`.
+    /// Never fires `onStateChanged`, so this doesn't echo straight back.
+    func applyRemoteSnapshot(_ snapshot: CryptoCapabilitySnapshot) {
+        syncSnapshot = snapshot
+    }
 
     func startAutoRefresh() {
         guard refreshTask == nil else { return }
@@ -188,6 +232,7 @@ final class CryptoTradingState: AgentCapability {
         case .setTradingMode(let mode):
             tradingMode = mode
         }
+        onStateChanged?()
     }
 
     // MARK: - Manual controls (direct human action inside the Crypto tab)
@@ -261,6 +306,7 @@ final class CryptoTradingState: AgentCapability {
                 // response is future work once live trading is fully wired up.
                 let position = tradingService.paperFill(symbol: symbol, side: side, quantity: quantity, atPrice: price, stopLossPrice: stopLoss)
                 openPositions.append(position)
+                onStateChanged?()
             } catch {
                 lastError = "Η live εντολή απέτυχε: \(error.localizedDescription)"
             }
@@ -339,6 +385,7 @@ final class CryptoTradingState: AgentCapability {
             stopLossPrice: stopLoss
         )
         openPositions.append(position)
+        onStateChanged?()
     }
 
     private func checkOpenPositionsForExit() {
@@ -386,5 +433,6 @@ final class CryptoTradingState: AgentCapability {
         tradeHistory.insert(trade, at: 0)
         riskManager.recordRealizedPnL(trade.realizedPnL, equity: equity)
         strategyEngine.recordOutcome(isWin: trade.isWin)
+        onStateChanged?()
     }
 }

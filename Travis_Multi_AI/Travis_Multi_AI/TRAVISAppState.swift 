@@ -13,6 +13,7 @@ final class TRAVISAppState {
     let approvalGate = ApprovalGateService()
     let orchestrator: AgentOrchestrator
     var cryptoTradingState: CryptoTradingState
+    private var syncService: SyncService?
 
     var isListening: Bool = false
     var isProcessing: Bool = false
@@ -28,6 +29,11 @@ final class TRAVISAppState {
 
         self.orchestrator = orchestrator
         self.cryptoTradingState = crypto
+
+        // Requires the iCloud/CloudKit capability to be enabled for this
+        // target in Xcode (Signing & Capabilities) before it can actually
+        // reach the user's private database.
+        self.syncService = SyncService(approvalGate: approvalGate, orchestrator: orchestrator, cryptoCapability: crypto)
     }
 
     func sendCommand(_ text: String, source: CommandSource = .manual) {
