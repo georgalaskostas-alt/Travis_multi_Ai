@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 
+@MainActor
 @Observable
 final class TRAVISAppState {
     var selectedSidebarItem: SidebarItem = .chat
@@ -8,7 +9,10 @@ final class TRAVISAppState {
     var pendingCommands: [TravisCommand] = []
     var activeTasks: [TravisTask] = sampleTasks
     var permissions: [TravisPermission] = TravisPermission.defaultPermissions
-    var cryptoTradingState = CryptoTradingState()
+
+    let approvalGate = ApprovalGateService()
+    let orchestrator: AgentOrchestrator
+    var cryptoTradingState: CryptoTradingState
 
     var isListening: Bool = false
     var isProcessing: Bool = false
@@ -16,6 +20,15 @@ final class TRAVISAppState {
     var preferredLanguage: AppLanguage = .greek
     var assistantName: String = "Travis"
     var lastResponseSummary: String = "Έτοιμος να βοηθήσω."
+
+    init() {
+        let orchestrator = AgentOrchestrator(approvalGate: approvalGate)
+        let crypto = CryptoTradingState(approvalGate: approvalGate)
+        orchestrator.register(crypto)
+
+        self.orchestrator = orchestrator
+        self.cryptoTradingState = crypto
+    }
 
     func sendCommand(_ text: String, source: CommandSource = .manual) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
